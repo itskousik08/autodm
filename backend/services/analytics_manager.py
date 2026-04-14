@@ -22,7 +22,28 @@ def _save_events(events: list):
         json.dump(events, f, indent=2, ensure_ascii=False)
 
 
+def cleanup_old_logs(days: int = 30):
+    events = _load_events()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    kept = []
+    for event in events:
+        raw = event.get("created_at")
+        try:
+            created_at = datetime.fromisoformat(raw)
+        except Exception:
+            continue
+
+        if created_at >= cutoff:
+            kept.append(event)
+
+    if len(kept) != len(events):
+        _save_events(kept)
+
+
 def log_event(event_type: str, status: str = "success", media_id: str = "", comment_id: str = "", username: str = "", igsid: str = "", meta: dict | None = None):
+    cleanup_old_logs(30)
+
     events = _load_events()
     events.append({
         "event_type": event_type,
@@ -38,6 +59,8 @@ def log_event(event_type: str, status: str = "success", media_id: str = "", comm
 
 
 def get_analytics(days: int = 7):
+    cleanup_old_logs(30)
+
     if days <= 0:
         days = 7
 
@@ -71,7 +94,7 @@ def get_analytics(days: int = 7):
                 "dm_failed": 0,
                 "comment_replies": 0,
                 "comment_reply_failed": 0,
-                "postbacks": 0
+                "postbacks": 0,
             }
 
         event_type = event.get("event_type")
@@ -107,5 +130,46 @@ def get_analytics(days: int = 7):
         "total_postbacks": total_postbacks,
         "dm_success_rate_percent": dm_success_rate,
         "reply_success_rate_percent": reply_success_rate,
-        "per_day": dict(sorted(per_day.items()))
+        "per_day": dict(sorted(per_day.items())),
+    }
+
+
+def get_logs(days: int = 30, event_type: str = "", status: str = "", username: str = "", media_id: str = "", limit: int = 200):
+    cleanup_old_logs(30)
+
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=days)
+    events = _load_events()
+
+    filtered = []
+    for event in reversed(events):
+        raw = event.get("created_at")
+        try:
+            created_at = datetime.fromisoformat(raw)
+        except Exception:
+            continue
+
+        if created_at < since:
+            continue
+
+        if event_type and event.get("event_type") != event_type:
+            continue
+
+        if status and event.get("status") != status:
+            continue
+
+        if username and username.lower() not in (event.get("username", "").lower()):
+            continue
+
+        if media_id and media_id not in event.get("media_id", ""):
+            continue
+
+        filtered.append(event)
+
+        if len(filtered) >= limit:
+            break
+
+    return {
+        "total": len(filtered),
+        "logs": filtered
     }
