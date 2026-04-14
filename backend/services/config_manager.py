@@ -2,9 +2,29 @@ import json
 import os
 import copy
 import random
+from typing import Optional
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "reels_config.json")
+
+
+def _default_boxes():
+    return [
+        {
+            "id": "box_main",
+            "name": "Main Box",
+            "text": "Here is your access 🎉",
+            "buttons": [
+                {
+                    "id": "btn_1",
+                    "label": "Open Access",
+                    "action_type": "url",   # url | goto
+                    "url": "https://yourwebsite.com/access",
+                    "target_box_id": ""
+                }
+            ]
+        }
+    ]
 
 
 def _default_config():
@@ -14,16 +34,16 @@ def _default_config():
             "active": True,
             "trigger_mode": "KEYWORD",   # KEYWORD | ANY_COMMENT
             "trigger_keywords": "info",
-            "comment_replies": [
-                "@{username} Sent you a message! Check it out!",
-                "@{username} Check your DMs 📩",
-                "@{username} I just sent you a message. Please check!"
-            ],
             "require_follow": False,
+            "comment_replies": [
+                "@{username} Check your DMs",
+                "@{username} Sent you a message! Check it out!",
+                "@{username} I sent you a DM"
+            ],
             "first_dm": {
                 "greeting": "Hey there!",
-                "text": "Thanks for your interest! Check your DMs.",
-                "cta": "Tap below to get access",
+                "text": "Thanks for your interest!",
+                "cta": "Tap below and I’ll send you the access",
                 "button_label": "Send me the access",
                 "button_link": ""
             },
@@ -43,6 +63,8 @@ def _default_config():
                     }
                 ]
             },
+            "message_boxes": _default_boxes(),
+            "start_box_id": "box_main",
             "advanced": {
                 "delay_first_dm": 0,
                 "prevent_duplicate": True
@@ -61,6 +83,46 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _normalize_buttons(buttons):
+    cleaned = []
+    for idx, btn in enumerate(buttons or []):
+        if not isinstance(btn, dict):
+            continue
+
+        action_type = (btn.get("action_type") or "url").strip().lower()
+        if action_type not in ["url", "goto"]:
+            action_type = "url"
+
+        cleaned.append({
+            "id": btn.get("id") or f"btn_{idx+1}",
+            "label": (btn.get("label") or "").strip(),
+            "action_type": action_type,
+            "url": (btn.get("url") or "").strip(),
+            "target_box_id": (btn.get("target_box_id") or "").strip()
+        })
+    return cleaned
+
+
+def _normalize_boxes(boxes):
+    cleaned = []
+    for idx, box in enumerate(boxes or []):
+        if not isinstance(box, dict):
+            continue
+
+        box_id = (box.get("id") or f"box_{idx+1}").strip()
+        cleaned.append({
+            "id": box_id,
+            "name": (box.get("name") or f"Box {idx+1}").strip(),
+            "text": (box.get("text") or "").strip(),
+            "buttons": _normalize_buttons(box.get("buttons", []))
+        })
+
+    if not cleaned:
+        cleaned = _default_boxes()
+
+    return cleaned
+
+
 def _migrate_legacy_config(config: dict) -> dict:
     default = _default_config()
 
@@ -73,15 +135,6 @@ def _migrate_legacy_config(config: dict) -> dict:
 
     if "trigger_keyword" in old_default and "trigger_keywords" not in old_default:
         old_default["trigger_keywords"] = old_default.pop("trigger_keyword")
-
-    if "dm_message" in old_default and "first_dm" not in old_default:
-        old_default["first_dm"] = {
-            "greeting": "Hey there!",
-            "text": old_default.pop("dm_message"),
-            "cta": "Tap below to get access",
-            "button_label": "Send me the access",
-            "button_link": ""
-        }
 
     if "comment_reply" in old_default and "comment_replies" not in old_default:
         old_reply = old_default.pop("comment_reply")
@@ -96,16 +149,34 @@ def _migrate_legacy_config(config: dict) -> dict:
                     "label": access.get("button_label", "Open Access"),
                     "url": access.get("access_link", "")
                 }
-            ] if access.get("access_link") or access.get("button_label") else []
+            ] if access.get("button_label") or access.get("access_link") else []
         }
 
-    if "require_follow" not in old_default:
-        old_default["require_follow"] = bool(old_default.get("follow_gate", {}).get("enabled", False))
-
-    if "trigger_mode" not in old_default:
-        old_default["trigger_mode"] = "KEYWORD"
+    if "message_boxes" not in old_default:
+        main_message = old_default.get("main_message", {})
+        old_default["message_boxes"] = [
+            {
+                "id": "box_main",
+                "name": "Main Box",
+                "text": main_message.get("text", "Here is your access 🎉"),
+                "buttons": [
+                    {
+                        "id": f"btn_{i+1}",
+                        "label": (btn.get("label") or "").strip(),
+                        "action_type": "url",
+                        "url": (btn.get("url") or "").strip(),
+                        "target_box_id": ""
+                    }
+                    for i, btn in enumerate(main_message.get("buttons", [])[:4])
+                    if isinstance(btn, dict) and ((btn.get("label") or "").strip() or (btn.get("url") or "").strip())
+                ]
+            }
+        ]
+        old_default["start_box_id"] = "box_main"
 
     config["default"] = _deep_merge(default["default"], old_default)
+    config["default"]["message_boxes"] = _normalize_boxes(config["default"].get("message_boxes", []))
+    config["default"]["start_box_id"] = (config["default"].get("start_box_id") or "box_main").strip()
 
     migrated_reels = {}
     for media_id, reel_cfg in config.get("reels", {}).items():
@@ -114,15 +185,6 @@ def _migrate_legacy_config(config: dict) -> dict:
 
         if "trigger_keyword" in reel_cfg and "trigger_keywords" not in reel_cfg:
             reel_cfg["trigger_keywords"] = reel_cfg.pop("trigger_keyword")
-
-        if "dm_message" in reel_cfg and "first_dm" not in reel_cfg:
-            reel_cfg["first_dm"] = {
-                "greeting": "Hey there!",
-                "text": reel_cfg.pop("dm_message"),
-                "cta": "Tap below to get access",
-                "button_label": "Send me the access",
-                "button_link": ""
-            }
 
         if "comment_reply" in reel_cfg and "comment_replies" not in reel_cfg:
             old_reply = reel_cfg.pop("comment_reply")
@@ -137,16 +199,37 @@ def _migrate_legacy_config(config: dict) -> dict:
                         "label": access.get("button_label", "Open Access"),
                         "url": access.get("access_link", "")
                     }
-                ] if access.get("access_link") or access.get("button_label") else []
+                ] if access.get("button_label") or access.get("access_link") else []
             }
 
-        if "require_follow" not in reel_cfg:
-            reel_cfg["require_follow"] = bool(reel_cfg.get("follow_gate", {}).get("enabled", False))
+        merged = _deep_merge(config["default"], reel_cfg)
 
-        if "trigger_mode" not in reel_cfg:
-            reel_cfg["trigger_mode"] = "KEYWORD"
+        if "message_boxes" not in merged or not merged["message_boxes"]:
+            main_message = merged.get("main_message", {})
+            merged["message_boxes"] = [
+                {
+                    "id": "box_main",
+                    "name": "Main Box",
+                    "text": main_message.get("text", "Here is your access 🎉"),
+                    "buttons": [
+                        {
+                            "id": f"btn_{i+1}",
+                            "label": (btn.get("label") or "").strip(),
+                            "action_type": "url",
+                            "url": (btn.get("url") or "").strip(),
+                            "target_box_id": ""
+                        }
+                        for i, btn in enumerate(main_message.get("buttons", [])[:4])
+                        if isinstance(btn, dict) and ((btn.get("label") or "").strip() or (btn.get("url") or "").strip())
+                    ]
+                }
+            ]
+            merged["start_box_id"] = "box_main"
 
-        migrated_reels[media_id] = _deep_merge(config["default"], reel_cfg)
+        merged["message_boxes"] = _normalize_boxes(merged.get("message_boxes", []))
+        merged["start_box_id"] = (merged.get("start_box_id") or "box_main").strip()
+
+        migrated_reels[media_id] = merged
 
     config["reels"] = migrated_reels
     return config
@@ -188,6 +271,16 @@ def update_reel_config(media_id: str, new_config: dict):
     config = _load_config()
     existing = config["reels"].get(media_id, {})
     merged = _deep_merge(_deep_merge(config["default"], existing), new_config)
+
+    merged["comment_replies"] = [
+        r.strip()
+        for r in merged.get("comment_replies", [])
+        if isinstance(r, str) and r.strip()
+    ]
+
+    merged["message_boxes"] = _normalize_boxes(merged.get("message_boxes", []))
+    merged["start_box_id"] = (merged.get("start_box_id") or "box_main").strip()
+
     config["reels"][media_id] = merged
     _save_config(config)
     return merged
@@ -204,3 +297,22 @@ def get_random_comment_reply(config: dict, username: str = "") -> str:
 
     safe_username = (username or "user").strip().replace("@", "")
     return chosen.replace("{username}", safe_username)
+
+
+def get_box_by_id(config: dict, box_id: str) -> Optional[dict]:
+    for box in config.get("message_boxes", []):
+        if isinstance(box, dict) and box.get("id") == box_id:
+            return box
+    return None
+
+
+def get_start_box(config: dict) -> Optional[dict]:
+    start_box_id = (config.get("start_box_id") or "").strip()
+    box = get_box_by_id(config, start_box_id)
+    if box:
+        return box
+
+    boxes = config.get("message_boxes", [])
+    if boxes:
+        return boxes[0]
+    return None
