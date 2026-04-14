@@ -19,15 +19,10 @@ router = APIRouter(prefix="/webhook", tags=["webhook"])
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROCESSED_FILE = os.path.join(BASE_DIR, "processed_comments.json")
 FLOW_STATE_FILE = os.path.join(BASE_DIR, "flow_state.json")
-DELIVERY_STATE_FILE = os.path.join(BASE_DIR, "delivery_state.json")
 
-OWNER_USERNAME = os.getenv("OWNER_IG_USERNAME", "mrkousikai")
-FOLLOW_GATE_MAX_ATTEMPTS = 2
+OWNER_USERNAME = "mrkousikai"
 
 
-# =========================================================
-# JSON HELPERS
-# =========================================================
 def _load_json_file(path, default):
     if not os.path.exists(path):
         return default
@@ -39,15 +34,10 @@ def _load_json_file(path, default):
 
 
 def _save_json_file(path, data):
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, path)
 
 
-# =========================================================
-# DUPLICATE COMMENT PROTECTION
-# =========================================================
 def _already_processed(comment_id: str) -> bool:
     data = _load_json_file(PROCESSED_FILE, {})
     return comment_id in data
@@ -59,9 +49,6 @@ def _mark_processed(comment_id: str):
     _save_json_file(PROCESSED_FILE, data)
 
 
-# =========================================================
-# FLOW STATE
-# =========================================================
 def _get_flow_state() -> dict:
     data = _load_json_file(FLOW_STATE_FILE, {})
     return data if isinstance(data, dict) else {}
@@ -72,53 +59,20 @@ def _save_flow_state(data: dict):
 
 
 def _set_user_state(igsid: str, state: dict):
-    all_states = _get_flow_state()
-    existing = all_states.get(igsid, {})
-    all_states[igsid] = {
+    data = _get_flow_state()
+    existing = data.get(igsid, {})
+    data[igsid] = {
         **existing,
         **state,
-        "updated_at": int(time.time()),
+        "updated_at": int(time.time())
     }
-    _save_flow_state(all_states)
+    _save_flow_state(data)
 
 
 def _get_user_state(igsid: str) -> dict:
     return _get_flow_state().get(igsid, {})
 
 
-# =========================================================
-# DELIVERY STATE
-# same user + same media dedupe for DM
-# =========================================================
-def _delivery_key(media_id: str, username: str) -> str:
-    return f"{media_id}::{(username or '').strip().lower()}"
-
-
-def _get_delivery_state() -> dict:
-    data = _load_json_file(DELIVERY_STATE_FILE, {})
-    return data if isinstance(data, dict) else {}
-
-
-def _get_delivery_record(media_id: str, username: str) -> dict:
-    data = _get_delivery_state()
-    return data.get(_delivery_key(media_id, username), {})
-
-
-def _set_delivery_record(media_id: str, username: str, record: dict):
-    data = _get_delivery_state()
-    key = _delivery_key(media_id, username)
-    existing = data.get(key, {})
-    data[key] = {
-        **existing,
-        **record,
-        "updated_at": int(time.time()),
-    }
-    _save_json_file(DELIVERY_STATE_FILE, data)
-
-
-# =========================================================
-# LOGIC HELPERS
-# =========================================================
 def _matches_trigger(comment_text: str, config: dict) -> bool:
     trigger_mode = str(config.get("trigger_mode", "KEYWORD")).upper()
 
@@ -171,22 +125,14 @@ def _send_initial_dm(comment_id: str, config: dict):
     )
 
 
-def _send_follow_gate_message(igsid: str, config: dict, use_retry_text: bool = False):
+def _send_follow_gate_message(igsid: str, config: dict):
     follow_gate = config.get("follow_gate", {})
-
-    follow_text = (
+    text = (
         follow_gate.get("follow_message", "").strip()
         or "Almost there! Please visit my profile and tap follow to continue 😁"
     )
-    retry_text = (
-        follow_gate.get("retry_message", "").strip()
-        or follow_text
-    )
-
     visit_label = (follow_gate.get("visit_profile_label", "Visit Profile") or "Visit Profile").strip()
     confirm_label = (follow_gate.get("confirm_label", "I'm following ✅") or "I'm following ✅").strip()
-
-    text = retry_text if use_retry_text else follow_text
 
     buttons = [
         build_profile_button(username=OWNER_USERNAME, title=visit_label),
@@ -200,7 +146,7 @@ def _send_follow_gate_message(igsid: str, config: dict, use_retry_text: bool = F
     return send_regular_buttons(igsid=igsid, text=text, buttons=buttons)
 
 
-def _normalize_box_button(btn: dict) -> dict | None:
+def _normalize_button(btn: dict):
     if not isinstance(btn, dict):
         return None
 
@@ -233,27 +179,7 @@ def _normalize_box_button(btn: dict) -> dict | None:
     return None
 
 
-def _send_box_message(igsid: str, box: dict):
-    text = (box.get("text") or "").strip()
-    raw_buttons = box.get("buttons", [])
-
-    buttons = []
-    for btn in raw_buttons[:4]:
-        normalized = _normalize_box_button(btn)
-        if normalized:
-            buttons.append(normalized)
-
-    if buttons:
-        return send_regular_buttons(
-            igsid=igsid,
-            text=text or "Choose an option",
-            buttons=buttons[:3],  # IG max 3 buttons in template
-        )
-
-    return send_text_dm_to_user(igsid, text or "")
-
-
-def _find_box(config: dict, box_id: str) -> dict | None:
+def _find_box(config: dict, box_id: str):
     boxes = config.get("main_message", {}).get("boxes", [])
     for box in boxes:
         if not isinstance(box, dict):
@@ -263,14 +189,34 @@ def _find_box(config: dict, box_id: str) -> dict | None:
     return None
 
 
-def _send_main_message(igsid: str, config: dict):
-    main_message = config.get("main_message", {})
-    text = (main_message.get("text") or "").strip()
-    raw_buttons = main_message.get("buttons", [])
+def _send_box_message(igsid: str, box: dict):
+    text = (box.get("text") or "").strip()
+    raw_buttons = box.get("buttons", [])
 
     buttons = []
     for btn in raw_buttons[:4]:
-        normalized = _normalize_box_button(btn)
+        normalized = _normalize_button(btn)
+        if normalized:
+            buttons.append(normalized)
+
+    if buttons:
+        return send_regular_buttons(
+            igsid=igsid,
+            text=text or "Choose an option",
+            buttons=buttons[:3],  # Instagram button template max 3
+        )
+
+    return send_text_dm_to_user(igsid, text or "")
+
+
+def _send_main_message(igsid: str, config: dict):
+    main_message = config.get("main_message", {})
+    text = (main_message.get("text") or "").strip()
+    buttons_raw = main_message.get("buttons", [])
+
+    buttons = []
+    for btn in buttons_raw[:4]:
+        normalized = _normalize_button(btn)
         if normalized:
             buttons.append(normalized)
 
@@ -284,9 +230,6 @@ def _send_main_message(igsid: str, config: dict):
     return send_text_dm_to_user(igsid, text or "Here is your access")
 
 
-# =========================================================
-# WEBHOOK VERIFY
-# =========================================================
 @router.get("")
 async def verify_webhook(
     hub_mode: str = Query(alias="hub.mode"),
@@ -298,17 +241,15 @@ async def verify_webhook(
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
-# =========================================================
-# MAIN WEBHOOK
-# =========================================================
 @router.post("")
 async def handle_webhook(request: Request):
     body = await request.json()
+
     print("WEBHOOK BODY:", body)
 
-    # -----------------------------------------------------
+    # -------------------------
     # 1. COMMENT EVENTS
-    # -----------------------------------------------------
+    # -------------------------
     for entry in body.get("entry", []):
         for change in entry.get("changes", []):
             if change.get("field") != "comments":
@@ -349,9 +290,6 @@ async def handle_webhook(request: Request):
 
             _mark_processed(comment_id)
 
-            delivery_record = _get_delivery_record(media_id, username)
-            dm_already_sent = bool(delivery_record.get("dm_sent", False))
-
             log_event(
                 event_type="comment_received",
                 status="success",
@@ -361,51 +299,32 @@ async def handle_webhook(request: Request):
                 igsid=igsid,
             )
 
-            canonical_igsid = igsid
-            dm_result = None
+            # हर valid comment par DM jayega
+            dm_result = _send_initial_dm(comment_id, config)
+            print("INITIAL DM RESULT:", dm_result)
 
-            # Same user + same reel -> DM only once
-            # but if previous attempt failed, retry
-            if not dm_already_sent:
-                dm_result = _send_initial_dm(comment_id, config)
-                print("INITIAL DM RESULT:", dm_result)
+            canonical_igsid = (dm_result.get("recipient_id") or igsid or "").strip()
 
-                canonical_igsid = (dm_result.get("recipient_id") or igsid or "").strip()
-
-                if "error" in dm_result:
-                    log_event(
-                        event_type="dm_failed",
-                        status="failed",
-                        media_id=media_id,
-                        comment_id=comment_id,
-                        username=username,
-                        igsid=canonical_igsid,
-                        meta=dm_result.get("error", {}),
-                    )
-                    _set_delivery_record(media_id, username, {
-                        "dm_sent": False,
-                        "last_comment_id": comment_id,
-                        "igsid": canonical_igsid,
-                    })
-                else:
-                    log_event(
-                        event_type="dm_sent",
-                        status="success",
-                        media_id=media_id,
-                        comment_id=comment_id,
-                        username=username,
-                        igsid=canonical_igsid,
-                    )
-                    _set_delivery_record(media_id, username, {
-                        "dm_sent": True,
-                        "last_comment_id": comment_id,
-                        "igsid": canonical_igsid,
-                    })
+            if "error" in dm_result:
+                log_event(
+                    event_type="dm_failed",
+                    status="failed",
+                    media_id=media_id,
+                    comment_id=comment_id,
+                    username=username,
+                    igsid=canonical_igsid,
+                    meta=dm_result.get("error", {}),
+                )
             else:
-                print(f"DM already sent earlier for media={media_id}, user={username}; skipping DM")
-                canonical_igsid = (delivery_record.get("igsid") or igsid or "").strip()
+                log_event(
+                    event_type="dm_sent",
+                    status="success",
+                    media_id=media_id,
+                    comment_id=comment_id,
+                    username=username,
+                    igsid=canonical_igsid,
+                )
 
-            # Comment reply can still go on every valid comment
             reply_message = get_random_comment_reply(config, username=username)
             if reply_message:
                 uses_placeholder = any(
@@ -443,12 +362,11 @@ async def handle_webhook(request: Request):
                     "media_id": media_id,
                     "username": username,
                     "step": "INITIAL_DM_SENT",
-                    "follow_attempt_count": 0,
                 })
 
-    # -----------------------------------------------------
+    # -------------------------
     # 2. MESSAGING / BUTTON CLICK EVENTS
-    # -----------------------------------------------------
+    # -------------------------
     for entry in body.get("entry", []):
         for messaging in entry.get("messaging", []):
             print("MESSAGING EVENT:", messaging)
@@ -475,8 +393,6 @@ async def handle_webhook(request: Request):
             state = _get_user_state(igsid)
             media_id = state.get("media_id", "")
             username = state.get("username", "user")
-            follow_attempt_count = int(state.get("follow_attempt_count", 0))
-
             config = get_reel_config(media_id) if media_id else get_reel_config("__default__")
 
             print("POSTBACK PAYLOAD:", payload)
@@ -493,18 +409,13 @@ async def handle_webhook(request: Request):
 
             if payload == "SEND_ACCESS":
                 if bool(config.get("require_follow")) or bool(config.get("follow_gate", {}).get("enabled", False)):
-                    result = _send_follow_gate_message(
-                        igsid=igsid,
-                        config=config,
-                        use_retry_text=False,
-                    )
+                    result = _send_follow_gate_message(igsid=igsid, config=config)
                     print("FOLLOW GATE RESULT:", result)
 
                     _set_user_state(igsid, {
                         "media_id": media_id,
                         "username": username,
                         "step": "FOLLOW_GATE_SENT",
-                        "follow_attempt_count": 0,
                     })
                 else:
                     result = _send_main_message(igsid=igsid, config=config)
@@ -517,33 +428,14 @@ async def handle_webhook(request: Request):
                     })
 
             elif payload == "I_AM_FOLLOWING":
-                new_attempt_count = follow_attempt_count + 1
-                print(f"FOLLOW ATTEMPT: {new_attempt_count}/{FOLLOW_GATE_MAX_ATTEMPTS}")
+                result = _send_main_message(igsid=igsid, config=config)
+                print("FOLLOW CONFIRM RESULT:", result)
 
-                if new_attempt_count < FOLLOW_GATE_MAX_ATTEMPTS:
-                    result = _send_follow_gate_message(
-                        igsid=igsid,
-                        config=config,
-                        use_retry_text=True,
-                    )
-                    print("FOLLOW RETRY RESULT:", result)
-
-                    _set_user_state(igsid, {
-                        "media_id": media_id,
-                        "username": username,
-                        "step": "FOLLOW_GATE_RETRY",
-                        "follow_attempt_count": new_attempt_count,
-                    })
-                else:
-                    result = _send_main_message(igsid=igsid, config=config)
-                    print("FOLLOW CONFIRM RESULT:", result)
-
-                    _set_user_state(igsid, {
-                        "media_id": media_id,
-                        "username": username,
-                        "step": "MAIN_MESSAGE_SENT",
-                        "follow_attempt_count": new_attempt_count,
-                    })
+                _set_user_state(igsid, {
+                    "media_id": media_id,
+                    "username": username,
+                    "step": "MAIN_MESSAGE_SENT",
+                })
 
             elif payload.startswith("BOX::"):
                 box_id = payload.split("BOX::", 1)[1].strip()
@@ -560,6 +452,6 @@ async def handle_webhook(request: Request):
                         "current_box_id": box_id,
                     })
                 else:
-                    print(f"BOX NOT FOUND: {box_id}")
+                    print("BOX NOT FOUND:", box_id)
 
     return {"status": "ok"}
