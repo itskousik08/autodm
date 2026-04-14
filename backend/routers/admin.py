@@ -1,12 +1,17 @@
-from typing import List, Optional
-from fastapi import APIRouter, HTTPException
+from typing import List, Optional, Dict, Any
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
+
 from services.instagram import get_account_media, send_dm, reply_to_comment
 from services.config_manager import get_all_configs, update_reel_config, get_reel_config
-from services.analytics_manager import get_analytics
+from services.analytics_manager import get_analytics, get_logs, cleanup_old_logs
 
 router = APIRouter(prefix="/api", tags=["admin"])
 
+
+# =========================
+# Pydantic Models
+# =========================
 
 class FirstDMConfig(BaseModel):
     greeting: str = ""
@@ -24,14 +29,24 @@ class FollowGateConfig(BaseModel):
     confirm_label: str = "I'm following ✅"
 
 
-class MainMessageButton(BaseModel):
+class FlowButton(BaseModel):
     label: str = ""
     url: str = ""
+    action_type: str = "link"   # "link" | "next_box"
+    next_box_id: str = ""
+
+
+class MessageBoxConfig(BaseModel):
+    id: str = ""
+    title: str = ""
+    text: str = ""
+    buttons: List[FlowButton] = Field(default_factory=list)
 
 
 class MainMessageConfig(BaseModel):
     text: str = ""
-    buttons: List[MainMessageButton] = Field(default_factory=list)
+    buttons: List[FlowButton] = Field(default_factory=list)
+    boxes: List[MessageBoxConfig] = Field(default_factory=list)
 
 
 class AdvancedConfig(BaseModel):
@@ -43,11 +58,8 @@ class ReelConfigUpdate(BaseModel):
     active: bool = True
     trigger_mode: str = "KEYWORD"
     trigger_keywords: str = "info"
-
-    # old single comment_reply ki jagah ab multiple random replies
     comment_replies: List[str] = Field(default_factory=list)
 
-    # follow requirement shortcut
     require_follow: bool = False
 
     first_dm: FirstDMConfig = Field(default_factory=FirstDMConfig)
@@ -66,6 +78,10 @@ class TestReplyRequest(BaseModel):
     message: str
 
 
+# =========================
+# Reels
+# =========================
+
 @router.get("/reels")
 async def fetch_reels():
     try:
@@ -74,18 +90,25 @@ async def fetch_reels():
 
         reels = []
         for item in media_items:
-            media_id = item["id"]
-            config = configs["reels"].get(media_id, configs["default"])
+            media_id = item.get("id")
+            if not media_id:
+                continue
+
+            config = configs.get("reels", {}).get(media_id, configs.get("default", {}))
 
             reels.append({
                 "id": media_id,
-                "thumbnail_url": item.get("thumbnail_url", item.get("media_url")),
+                "thumbnail_url": item.get("thumbnail_url") or item.get("media_url"),
                 "permalink": item.get("permalink"),
-                "caption": item.get("caption", "")[:100],
-                "config": config
+                "caption": (item.get("caption") or "")[:120],
+                "media_type": item.get("media_type"),
+                "config": config,
             })
 
-        return {"reels": reels, "total": len(reels)}
+        return {
+            "reels": reels,
+            "total": len(reels),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -104,44 +127,104 @@ async def update_reel(media_id: str, config: ReelConfigUpdate):
     try:
         payload = config.dict()
 
-        # safe cleanup: blank replies remove
+        # clean comment replies
         payload["comment_replies"] = [
-            reply.strip()
-            for reply in payload.get("comment_replies", [])
-            if isinstance(reply, str) and reply.strip()
+            r.strip() for r in payload.get("comment_replies", [])
+            if isinstance(r, str) and r.strip()
         ]
 
-        # follow_gate.enabled ko require_follow ke saath sync karo
-        if "follow_gate" not in payload or not isinstance(payload["follow_gate"], dict):
-            payload["follow_gate"] = {}
-
+        # sync require_follow -> follow_gate.enabled
         payload["follow_gate"]["enabled"] = bool(payload.get("require_follow", False))
 
-        # main_message buttons max 2 hi rakho
-        main_message = payload.get("main_message", {})
-        buttons = main_message.get("buttons", [])
-        cleaned_buttons = []
-
-        for btn in buttons[:2]:
+        # normalize main buttons
+        main_buttons = []
+        for btn in payload.get("main_message", {}).get("buttons", []):
             if not isinstance(btn, dict):
                 continue
 
             label = (btn.get("label") or "").strip()
+            action_type = (btn.get("action_type") or "link").strip()
             url = (btn.get("url") or "").strip()
+            next_box_id = (btn.get("next_box_id") or "").strip()
 
-            if label and url:
+            if not label:
+                continue
+
+            if action_type == "link" and not url:
+                continue
+
+            if action_type == "next_box" and not next_box_id:
+                continue
+
+            main_buttons.append({
+                "label": label,
+                "url": url,
+                "action_type": action_type,
+                "next_box_id": next_box_id,
+            })
+
+        payload["main_message"]["buttons"] = main_buttons[:4]
+
+        # normalize boxes
+        cleaned_boxes = []
+        for box in payload.get("main_message", {}).get("boxes", []):
+            if not isinstance(box, dict):
+                continue
+
+            box_id = (box.get("id") or "").strip()
+            title = (box.get("title") or "").strip()
+            text = (box.get("text") or "").strip()
+
+            cleaned_buttons = []
+            for btn in box.get("buttons", []):
+                if not isinstance(btn, dict):
+                    continue
+
+                label = (btn.get("label") or "").strip()
+                action_type = (btn.get("action_type") or "link").strip()
+                url = (btn.get("url") or "").strip()
+                next_box_id = (btn.get("next_box_id") or "").strip()
+
+                if not label:
+                    continue
+
+                if action_type == "link" and not url:
+                    continue
+
+                if action_type == "next_box" and not next_box_id:
+                    continue
+
                 cleaned_buttons.append({
                     "label": label,
-                    "url": url
+                    "url": url,
+                    "action_type": action_type,
+                    "next_box_id": next_box_id,
                 })
 
-        payload["main_message"]["buttons"] = cleaned_buttons
+            if box_id and (text or cleaned_buttons):
+                cleaned_boxes.append({
+                    "id": box_id,
+                    "title": title,
+                    "text": text,
+                    "buttons": cleaned_buttons[:4],
+                })
+
+        payload["main_message"]["boxes"] = cleaned_boxes
 
         updated = update_reel_config(media_id, payload)
-        return {"status": "updated", "media_id": media_id, "config": updated}
+        return {
+            "status": "updated",
+            "media_id": media_id,
+            "config": updated,
+        }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# =========================
+# Stats / Analytics
+# =========================
 
 @router.get("/stats")
 async def get_stats():
@@ -154,8 +237,11 @@ async def get_stats():
         using_default = 0
 
         for item in media_items:
-            media_id = item["id"]
-            if media_id in configs["reels"]:
+            media_id = item.get("id")
+            if not media_id:
+                continue
+
+            if media_id in configs.get("reels", {}):
                 configured += 1
             else:
                 using_default += 1
@@ -163,14 +249,14 @@ async def get_stats():
         return {
             "total_reels": total,
             "configured": configured,
-            "using_default": using_default
+            "using_default": using_default,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/analytics")
-async def analytics(days: int = 7):
+async def analytics(days: int = Query(default=7)):
     try:
         if days not in [7, 30]:
             days = 7
@@ -178,6 +264,49 @@ async def analytics(days: int = 7):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# =========================
+# Logs
+# =========================
+
+@router.get("/logs")
+async def logs(
+    limit: int = Query(default=50, ge=1, le=500),
+    event_type: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    username: Optional[str] = Query(default=None),
+    days: int = Query(default=30, ge=1, le=365),
+):
+    try:
+        return {
+            "logs": get_logs(
+                limit=limit,
+                event_type=event_type,
+                status=status,
+                username=username,
+                days=days,
+            )
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/logs/cleanup")
+async def logs_cleanup(days: int = Query(default=30, ge=1, le=365)):
+    try:
+        deleted_count = cleanup_old_logs(days=days)
+        return {
+            "status": "success",
+            "deleted_count": deleted_count,
+            "kept_days": days,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =========================
+# Test helpers
+# =========================
 
 @router.post("/test/send-dm")
 async def test_send_dm(request: TestDMRequest):
