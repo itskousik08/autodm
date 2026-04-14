@@ -3,6 +3,7 @@ from urllib.parse import quote
 from config import INSTAGRAM_ACCESS_TOKEN
 
 GRAPH_API_URL = "https://graph.instagram.com"
+BUTTON_TEMPLATE_TEXT_MAX = 640
 
 
 def _safe_json(response):
@@ -21,6 +22,14 @@ def _safe_json(response):
     return data
 
 
+def _truncate_text(text: str, max_len: int = BUTTON_TEMPLATE_TEXT_MAX) -> str:
+    if not text:
+        return ""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3].rstrip() + "..."
+
+
 def send_dm(comment_id: str, message: str):
     url = f"{GRAPH_API_URL}/me/messages"
     payload = {
@@ -36,8 +45,25 @@ def send_dm(comment_id: str, message: str):
         return {"error": {"message": f"Failed to send DM: {str(e)}"}}
 
 
+def send_text_dm_to_user(igsid: str, message: str):
+    url = f"{GRAPH_API_URL}/me/messages"
+    payload = {
+        "recipient": {"id": igsid},
+        "message": {"text": message},
+    }
+    params = {"access_token": INSTAGRAM_ACCESS_TOKEN}
+
+    try:
+        response = requests.post(url, json=payload, params=params, timeout=30)
+        return _safe_json(response)
+    except requests.RequestException as e:
+        return {"error": {"message": f"Failed to send text DM to user: {str(e)}"}}
+
+
 def send_dm_with_button(comment_id: str, text: str, button_label: str, button_url: str):
     url = f"{GRAPH_API_URL}/me/messages"
+    safe_text = _truncate_text(text)
+
     payload = {
         "recipient": {"comment_id": comment_id},
         "message": {
@@ -45,7 +71,7 @@ def send_dm_with_button(comment_id: str, text: str, button_label: str, button_ur
                 "type": "template",
                 "payload": {
                     "template_type": "button",
-                    "text": text,
+                    "text": safe_text,
                     "buttons": [
                         {
                             "type": "web_url",
@@ -64,8 +90,8 @@ def send_dm_with_button(comment_id: str, text: str, button_label: str, button_ur
         data = _safe_json(response)
 
         if "error" in data:
-            print("BUTTON DM FAILED -> FALLBACK TO TEXT")
-            return send_dm(comment_id, text)
+            print("BUTTON DM FAILED -> FALLBACK TO PLAIN TEXT:", data.get("error"))
+            return send_dm(comment_id, safe_text)
 
         return data
     except requests.RequestException as e:
@@ -73,12 +99,9 @@ def send_dm_with_button(comment_id: str, text: str, button_label: str, button_ur
 
 
 def send_dm_with_postback_button(comment_id: str, text: str, button_label: str, payload_value: str):
-    """
-    Best-effort:
-    first card ko box/button style mein bhejne ke liye.
-    Agar account/app capability allow kare to postback button render hoga.
-    """
     url = f"{GRAPH_API_URL}/me/messages"
+    safe_text = _truncate_text(text)
+
     payload = {
         "recipient": {"comment_id": comment_id},
         "message": {
@@ -86,7 +109,7 @@ def send_dm_with_postback_button(comment_id: str, text: str, button_label: str, 
                 "type": "template",
                 "payload": {
                     "template_type": "button",
-                    "text": text,
+                    "text": safe_text,
                     "buttons": [
                         {
                             "type": "postback",
@@ -105,12 +128,44 @@ def send_dm_with_postback_button(comment_id: str, text: str, button_label: str, 
         data = _safe_json(response)
 
         if "error" in data:
-            print("POSTBACK BUTTON FAILED -> FALLBACK TO TEXT")
-            return send_dm(comment_id, text)
+            print("POSTBACK BUTTON DM FAILED -> FALLBACK TO PLAIN TEXT:", data.get("error"))
+            return send_dm(comment_id, safe_text)
 
         return data
     except requests.RequestException as e:
         return {"error": {"message": f"Failed to send DM with postback button: {str(e)}"}}
+
+
+def send_regular_buttons(igsid: str, text: str, buttons: list):
+    url = f"{GRAPH_API_URL}/me/messages"
+    safe_text = _truncate_text(text)
+
+    payload = {
+        "recipient": {"id": igsid},
+        "message": {
+            "attachment": {
+                "type": "template",
+                "payload": {
+                    "template_type": "button",
+                    "text": safe_text,
+                    "buttons": buttons[:3],
+                },
+            }
+        },
+    }
+    params = {"access_token": INSTAGRAM_ACCESS_TOKEN}
+
+    try:
+        response = requests.post(url, json=payload, params=params, timeout=30)
+        data = _safe_json(response)
+
+        if "error" in data:
+            print("REGULAR BUTTONS FAILED -> FALLBACK TO PLAIN TEXT:", data.get("error"))
+            return send_text_dm_to_user(igsid, safe_text)
+
+        return data
+    except requests.RequestException as e:
+        return {"error": {"message": f"Failed to send buttons: {str(e)}"}}
 
 
 def send_quick_replies(comment_id: str, text: str, quick_replies: list):
@@ -129,30 +184,6 @@ def send_quick_replies(comment_id: str, text: str, quick_replies: list):
         return _safe_json(response)
     except requests.RequestException as e:
         return {"error": {"message": f"Failed to send quick replies: {str(e)}"}}
-
-
-def send_regular_buttons(igsid: str, text: str, buttons: list):
-    url = f"{GRAPH_API_URL}/me/messages"
-    payload = {
-        "recipient": {"id": igsid},
-        "message": {
-            "attachment": {
-                "type": "template",
-                "payload": {
-                    "template_type": "button",
-                    "text": text,
-                    "buttons": buttons[:3],
-                },
-            }
-        },
-    }
-    params = {"access_token": INSTAGRAM_ACCESS_TOKEN}
-
-    try:
-        response = requests.post(url, json=payload, params=params, timeout=30)
-        return _safe_json(response)
-    except requests.RequestException as e:
-        return {"error": {"message": f"Failed to send buttons: {str(e)}"}}
 
 
 def reply_to_comment(comment_id: str, message: str):
@@ -205,12 +236,12 @@ def build_profile_button(username: str, title: str = "Visit Profile"):
     safe_username = (username or "").strip().replace("@", "")
 
     if safe_username:
-        url = f"https://instagram.com/{quote(safe_username)}"
+        profile_url = f"https://instagram.com/{quote(safe_username)}"
     else:
-        url = "https://instagram.com/"
+        profile_url = "https://instagram.com/"
 
     return {
         "type": "web_url",
-        "url": url,
+        "url": profile_url,
         "title": (title or "Visit Profile")[:20],
     }
