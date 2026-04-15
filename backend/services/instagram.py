@@ -232,6 +232,60 @@ def get_user_profile(igsid: str):
         return {"error": {"message": str(e)}}
 
 
+def get_user_follow_status(igsid: str):
+    """
+    Try to read whether the Instagram user follows the business account.
+
+    Returns:
+    {
+        "ok": bool,
+        "follows": bool,
+        "data": {...} | None,
+        "error": {...} | None
+    }
+    """
+    if not igsid:
+        return {
+            "ok": False,
+            "follows": False,
+            "data": None,
+            "error": {"message": "Missing igsid"},
+        }
+
+    url = f"{GRAPH_API_URL}/{igsid}"
+    params = {
+        "access_token": INSTAGRAM_ACCESS_TOKEN,
+        "fields": "id,username,is_user_follow_business,is_business_follow_user",
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        data = _safe_json(response)
+
+        if "error" in data:
+            return {
+                "ok": False,
+                "follows": False,
+                "data": None,
+                "error": data.get("error", {}),
+            }
+
+        follows = bool(data.get("is_user_follow_business", False))
+        return {
+            "ok": True,
+            "follows": follows,
+            "data": data,
+            "error": None,
+        }
+    except requests.RequestException as e:
+        return {
+            "ok": False,
+            "follows": False,
+            "data": None,
+            "error": {"message": f"Failed to fetch follow status: {str(e)}"},
+        }
+
+
 def build_profile_button(username: str, title: str = "Visit Profile"):
     safe_username = (username or "").strip().replace("@", "")
 
