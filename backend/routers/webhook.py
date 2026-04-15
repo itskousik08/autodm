@@ -7,6 +7,7 @@ from services.instagram import (
     send_text_dm_to_user,
     reply_to_comment,
     build_profile_button,
+    get_user_follow_status,
 )
 from services.config_manager import get_reel_config, get_random_comment_reply
 from services.analytics_manager import log_event
@@ -107,7 +108,6 @@ def _send_initial_dm(comment_id: str, config: dict):
     button_label = (first_dm.get("button_label") or "Send me the access").strip()
     button_link = (first_dm.get("button_link") or "").strip()
 
-    # direct URL button if configured
     if button_link:
         return send_dm_with_button(
             comment_id=comment_id,
@@ -116,7 +116,6 @@ def _send_initial_dm(comment_id: str, config: dict):
             button_url=button_link,
         )
 
-    # otherwise postback button for next-step flow
     return send_dm_with_postback_button(
         comment_id=comment_id,
         text=text,
@@ -144,6 +143,60 @@ def _send_follow_gate_message(igsid: str, config: dict):
     ]
 
     return send_regular_buttons(igsid=igsid, text=text, buttons=buttons)
+
+
+def _send_follow_gate_retry_message(igsid: str, config: dict):
+    follow_gate = config.get("follow_gate", {})
+    text = (
+        follow_gate.get("retry_message", "").strip()
+        or follow_gate.get("follow_message", "").strip()
+        or "Please follow first to continue!"
+    )
+    visit_label = (follow_gate.get("visit_profile_label", "Visit Profile") or "Visit Profile").strip()
+    confirm_label = (follow_gate.get("confirm_label", "I'm following ✅") or "I'm following ✅").strip()
+
+    buttons = [
+        build_profile_button(username=OWNER_USERNAME, title=visit_label),
+        {
+            "type": "postback",
+            "title": confirm_label[:20],
+            "payload": "I_AM_FOLLOWING",
+        },
+    ]
+
+    return send_regular_buttons(igsid=igsid, text=text, buttons=buttons)
+
+
+def _check_user_follows_owner(igsid: str):
+    result = get_user_follow_status(igsid)
+
+    print("FOLLOW STATUS RESULT:", result)
+
+    if not result.get("ok"):
+        return {
+            "ok": False,
+            "follows": False,
+            "reason": "lookup_failed",
+            "error": result.get("error", {}),
+            "data": result.get("data"),
+        }
+
+    if result.get("follows"):
+        return {
+            "ok": True,
+            "follows": True,
+            "reason": "follows",
+            "error": None,
+            "data": result.get("data"),
+        }
+
+    return {
+        "ok": True,
+        "follows": False,
+        "reason": "not_following",
+        "error": None,
+        "data": result.get("data"),
+    }
 
 
 def _normalize_button(btn: dict):
@@ -203,7 +256,7 @@ def _send_box_message(igsid: str, box: dict):
         return send_regular_buttons(
             igsid=igsid,
             text=text or "Choose an option",
-            buttons=buttons[:3],  # Instagram button template max 3
+            buttons=buttons[:3],
         )
 
     return send_text_dm_to_user(igsid, text or "")
@@ -299,7 +352,6 @@ async def handle_webhook(request: Request):
                 igsid=igsid,
             )
 
-            # हर valid comment par DM jayega
             dm_result = _send_initial_dm(comment_id, config)
             print("INITIAL DM RESULT:", dm_result)
 
@@ -428,14 +480,43 @@ async def handle_webhook(request: Request):
                     })
 
             elif payload == "I_AM_FOLLOWING":
-                result = _send_main_message(igsid=igsid, config=config)
-                print("FOLLOW CONFIRM RESULT:", result)
+                follow_check = _check_user_follows_owner(igsid=igsid)
 
-                _set_user_state(igsid, {
-                    "media_id": media_id,
-                    "username": username,
-                    "step": "MAIN_MESSAGE_SENT",
-                })
+                log_event(
+                    event_type="follow_check",
+                    status="success" if follow_check.get("ok") else "failed",
+                    media_id=media_id,
+                    username=username,
+                    igsid=igsid,
+                    meta={
+                        "follows": follow_check.get("follows"),
+                        "reason": follow_check.get("reason"),
+                        "error": follow_check.get("error"),
+                        "data": follow_check.get("data"),
+                    },
+                )
+
+                if follow_check.get("ok") and follow_check.get("follows"):
+                    result = _send_main_message(igsid=igsid, config=config)
+                    print("FOLLOW CONFIRM RESULT:", result)
+
+                    _set_user_state(igsid, {
+                        "media_id": media_id,
+                        "username": username,
+                        "step": "MAIN_MESSAGE_SENT",
+                        "is_following": True,
+                    })
+                else:
+                    result = _send_follow_gate_retry_message(igsid=igsid, config=config)
+                    print("FOLLOW RETRY RESULT:", result)
+
+                    _set_user_state(igsid, {
+                        "media_id": media_id,
+                        "username": username,
+                        "step": "FOLLOW_GATE_SENT",
+                        "is_following": False,
+                        "follow_check_reason": follow_check.get("reason"),
+                    })
 
             elif payload.startswith("BOX::"):
                 box_id = payload.split("BOX::", 1)[1].strip()
