@@ -1,6 +1,6 @@
 import requests
 from urllib.parse import quote
-from config import INSTAGRAM_ACCESS_TOKEN
+from config import INSTAGRAM_ACCESS_TOKEN, IG_BUSINESS_ACCOUNT_ID
 
 GRAPH_API_URL = "https://graph.instagram.com"
 BUTTON_TEMPLATE_TEXT_MAX = 640
@@ -198,39 +198,11 @@ def reply_to_comment(comment_id: str, message: str):
         return {"error": {"message": f"Failed to reply to comment: {str(e)}"}}
 
 
-def _get_instagram_business_account_id():
-    url = "https://graph.facebook.com/me/accounts"
-    params = {
-        "access_token": INSTAGRAM_ACCESS_TOKEN,
-        "fields": "instagram_business_account{id,username},name",
-        "limit": 100,
-    }
-
-    try:
-        response = requests.get(url, params=params, timeout=30)
-        data = _safe_json(response)
-
-        if "error" in data:
-            print("GET IG BUSINESS ACCOUNT ERROR:", data)
-            return None
-
-        for page in data.get("data", []):
-            ig_account = page.get("instagram_business_account") or {}
-            ig_id = (ig_account.get("id") or "").strip()
-            if ig_id:
-                print("FOUND INSTAGRAM BUSINESS ACCOUNT ID:", ig_id)
-                return ig_id
-
-        print("NO INSTAGRAM BUSINESS ACCOUNT LINKED")
-        return None
-    except requests.RequestException as e:
-        print("FAILED TO FETCH INSTAGRAM BUSINESS ACCOUNT ID:", str(e))
-        return None
-
-
 def get_account_media():
-    ig_account_id = _get_instagram_business_account_id()
+    ig_account_id = (IG_BUSINESS_ACCOUNT_ID or "").strip()
+
     if not ig_account_id:
+        print("IG_BUSINESS_ACCOUNT_ID missing in env")
         return []
 
     url = f"https://graph.facebook.com/{ig_account_id}/media"
