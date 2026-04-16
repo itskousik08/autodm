@@ -198,8 +198,42 @@ def reply_to_comment(comment_id: str, message: str):
         return {"error": {"message": f"Failed to reply to comment: {str(e)}"}}
 
 
+def _get_instagram_business_account_id():
+    url = "https://graph.facebook.com/me/accounts"
+    params = {
+        "access_token": INSTAGRAM_ACCESS_TOKEN,
+        "fields": "instagram_business_account{id,username},name",
+        "limit": 100,
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        data = _safe_json(response)
+
+        if "error" in data:
+            print("GET IG BUSINESS ACCOUNT ERROR:", data)
+            return None
+
+        for page in data.get("data", []):
+            ig_account = page.get("instagram_business_account") or {}
+            ig_id = (ig_account.get("id") or "").strip()
+            if ig_id:
+                print("FOUND INSTAGRAM BUSINESS ACCOUNT ID:", ig_id)
+                return ig_id
+
+        print("NO INSTAGRAM BUSINESS ACCOUNT LINKED")
+        return None
+    except requests.RequestException as e:
+        print("FAILED TO FETCH INSTAGRAM BUSINESS ACCOUNT ID:", str(e))
+        return None
+
+
 def get_account_media():
-    url = f"{GRAPH_API_URL}/me/media"
+    ig_account_id = _get_instagram_business_account_id()
+    if not ig_account_id:
+        return []
+
+    url = f"https://graph.facebook.com/{ig_account_id}/media"
     params = {
         "access_token": INSTAGRAM_ACCESS_TOKEN,
         "fields": "id,media_type,media_url,thumbnail_url,permalink,caption",
@@ -211,10 +245,14 @@ def get_account_media():
         data = _safe_json(response)
 
         if "error" in data:
+            print("GET ACCOUNT MEDIA ERROR:", data)
             return []
 
-        return data.get("data", [])
-    except requests.RequestException:
+        media = data.get("data", [])
+        print("MEDIA COUNT:", len(media))
+        return media
+    except requests.RequestException as e:
+        print("FAILED TO FETCH ACCOUNT MEDIA:", str(e))
         return []
 
 
