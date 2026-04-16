@@ -125,7 +125,7 @@ async def get_reel(media_id: str):
 @router.put("/reels/{media_id}")
 async def update_reel(media_id: str, config: ReelConfigUpdate):
     try:
-        payload = config.dict()
+        payload = config.model_dump() if hasattr(config, "model_dump") else config.dict()
 
         # clean comment replies
         payload["comment_replies"] = [
