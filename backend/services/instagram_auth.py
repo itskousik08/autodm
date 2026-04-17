@@ -25,16 +25,16 @@ def exchange_code_for_token(code: str):
         "code": code,
     }
 
-    response = requests.post(TOKEN_URL, data=payload)
+    response = requests.post(TOKEN_URL, data=payload, timeout=30)
     return response.json()
 
 
-def get_user_profile(access_token: str):
+def get_oauth_user_profile(access_token: str):
     url = f"{GRAPH_URL}/me"
     params = {
         "fields": "id,username,account_type",
         "access_token": access_token,
     }
 
-    response = requests.get(url, params=params)
+    response = requests.get(url, params=params, timeout=30)
     return response.json()
