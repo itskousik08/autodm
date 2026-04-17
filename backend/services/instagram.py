@@ -243,17 +243,6 @@ def get_user_profile(igsid: str):
 
 
 def get_user_follow_status(igsid: str):
-    """
-    Try to read whether the Instagram user follows the business account.
-
-    Returns:
-    {
-        "ok": bool,
-        "follows": bool,
-        "data": {...} | None,
-        "error": {...} | None
-    }
-    """
     if not igsid:
         return {
             "ok": False,
@@ -308,4 +297,4 @@ def build_profile_button(username: str, title: str = "Visit Profile"):
         "type": "web_url",
         "url": profile_url,
         "title": (title or "Visit Profile")[:20],
-    }
+}
