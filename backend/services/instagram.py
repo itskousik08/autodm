@@ -1,6 +1,6 @@
 import requests
 from urllib.parse import quote
-from config import INSTAGRAM_ACCESS_TOKEN, IG_BUSINESS_ACCOUNT_ID
+from config import INSTAGRAM_ACCESS_TOKEN
 
 GRAPH_API_URL = "https://graph.instagram.com"
 BUTTON_TEMPLATE_TEXT_MAX = 640
@@ -199,13 +199,7 @@ def reply_to_comment(comment_id: str, message: str):
 
 
 def get_account_media():
-    ig_account_id = (IG_BUSINESS_ACCOUNT_ID or "").strip()
-
-    if not ig_account_id:
-        print("IG_BUSINESS_ACCOUNT_ID missing in env")
-        return []
-
-    url = f"https://graph.facebook.com/{ig_account_id}/media"
+    url = f"{GRAPH_API_URL}/me/media"
     params = {
         "access_token": INSTAGRAM_ACCESS_TOKEN,
         "fields": "id,media_type,media_url,thumbnail_url,permalink,caption",
@@ -217,14 +211,10 @@ def get_account_media():
         data = _safe_json(response)
 
         if "error" in data:
-            print("GET ACCOUNT MEDIA ERROR:", data)
             return []
 
-        media = data.get("data", [])
-        print("MEDIA COUNT:", len(media))
-        return media
-    except requests.RequestException as e:
-        print("FAILED TO FETCH ACCOUNT MEDIA:", str(e))
+        return data.get("data", [])
+    except requests.RequestException:
         return []
 
 
@@ -243,6 +233,17 @@ def get_user_profile(igsid: str):
 
 
 def get_user_follow_status(igsid: str):
+    """
+    Try to read whether the Instagram user follows the business account.
+
+    Returns:
+    {
+        "ok": bool,
+        "follows": bool,
+        "data": {...} | None,
+        "error": {...} | None
+    }
+    """
     if not igsid:
         return {
             "ok": False,
@@ -297,4 +298,4 @@ def build_profile_button(username: str, title: str = "Visit Profile"):
         "type": "web_url",
         "url": profile_url,
         "title": (title or "Visit Profile")[:20],
-}
+    }
