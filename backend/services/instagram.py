@@ -168,6 +168,38 @@ def send_regular_buttons(igsid: str, text: str, buttons: list):
         return {"error": {"message": f"Failed to send buttons: {str(e)}"}}
 
 
+def send_regular_buttons_to_comment(comment_id: str, text: str, buttons: list):
+    url = f"{GRAPH_API_URL}/me/messages"
+    safe_text = _truncate_text(text)
+
+    payload = {
+        "recipient": {"comment_id": comment_id},
+        "message": {
+            "attachment": {
+                "type": "template",
+                "payload": {
+                    "template_type": "button",
+                    "text": safe_text,
+                    "buttons": buttons[:3],
+                },
+            }
+        },
+    }
+    params = {"access_token": INSTAGRAM_ACCESS_TOKEN}
+
+    try:
+        response = requests.post(url, json=payload, params=params, timeout=30)
+        data = _safe_json(response)
+
+        if "error" in data:
+            print("COMMENT BUTTONS FAILED -> FALLBACK TO PLAIN TEXT:", data.get("error"))
+            return send_dm(comment_id, safe_text)
+
+        return data
+    except requests.RequestException as e:
+        return {"error": {"message": f"Failed to send comment buttons: {str(e)}"}}
+
+
 def send_quick_replies(comment_id: str, text: str, quick_replies: list):
     url = f"{GRAPH_API_URL}/me/messages"
     payload = {
