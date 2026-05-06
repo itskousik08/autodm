@@ -2,75 +2,10 @@ import json
 import os
 import copy
 import random
-import time
 from typing import Optional
-
-try:
-    from config import OWNER_USERNAME, OWNER_IGSID
-except Exception:
-    OWNER_USERNAME = ""
-    OWNER_IGSID = ""
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "reels_config.json")
-
-
-def _clean_username(value: str) -> str:
-    if not value:
-        return ""
-
-    username = str(value).strip().replace('"', "").replace("'", "")
-    username = username.replace("https://", "").replace("http://", "")
-    username = username.replace("www.instagram.com/", "")
-    username = username.replace("instagram.com/", "")
-    username = username.replace("@", "")
-    username = username.strip().strip("/")
-
-    if "/" in username:
-        username = username.split("/", 1)[0]
-
-    if "?" in username:
-        username = username.split("?", 1)[0]
-
-    return username.strip().lower()
-
-
-def _auto_fetch_owner_profile() -> dict:
-    """
-    Fetch owner account username automatically using current access token.
-    Safe lazy import avoids circular import.
-    """
-    try:
-        from services.instagram import get_business_account_profile
-        result = get_business_account_profile()
-
-        if result.get("ok") and result.get("username"):
-            return {
-                "owner_username": _clean_username(result.get("username")),
-                "owner_igsid": "",
-                "owner_account_id": str(result.get("id") or ""),
-                "auto_fetched": True,
-                "auto_fetch_error": "",
-                "updated_at": int(time.time()),
-            }
-
-        return {
-            "owner_username": "",
-            "owner_igsid": "",
-            "owner_account_id": "",
-            "auto_fetched": False,
-            "auto_fetch_error": str(result.get("error") or "Could not fetch username"),
-            "updated_at": int(time.time()),
-        }
-    except Exception as e:
-        return {
-            "owner_username": "",
-            "owner_igsid": "",
-            "owner_account_id": "",
-            "auto_fetched": False,
-            "auto_fetch_error": str(e),
-            "updated_at": int(time.time()),
-        }
 
 
 def _default_boxes():
@@ -93,18 +28,7 @@ def _default_boxes():
 
 
 def _default_config():
-    owner_username = _clean_username(OWNER_USERNAME)
-    settings = {
-        "owner_username": owner_username,
-        "owner_igsid": (OWNER_IGSID or "").strip(),
-        "owner_account_id": "",
-        "auto_fetched": False,
-        "auto_fetch_error": "",
-        "updated_at": int(time.time()),
-    }
-
     return {
-        "settings": settings,
         "reels": {},
         "default": {
             "active": True,
@@ -199,40 +123,11 @@ def _normalize_boxes(boxes):
     return cleaned
 
 
-def _normalize_settings(settings: dict, allow_auto_fetch: bool = True) -> dict:
-    if not isinstance(settings, dict):
-        settings = {}
-
-    owner_username = _clean_username(settings.get("owner_username") or OWNER_USERNAME or "")
-    owner_igsid = (settings.get("owner_igsid") or OWNER_IGSID or "").strip()
-    owner_account_id = str(settings.get("owner_account_id") or "").strip()
-
-    normalized = {
-        "owner_username": owner_username,
-        "owner_igsid": owner_igsid,
-        "owner_account_id": owner_account_id,
-        "auto_fetched": bool(settings.get("auto_fetched", False)),
-        "auto_fetch_error": str(settings.get("auto_fetch_error") or ""),
-        "updated_at": int(settings.get("updated_at") or time.time()),
-    }
-
-    # Auto-fetch only when username is missing.
-    if allow_auto_fetch and not normalized["owner_username"]:
-        fetched = _auto_fetch_owner_profile()
-        if fetched.get("owner_username"):
-            normalized.update(fetched)
-
-    return normalized
-
-
 def _migrate_legacy_config(config: dict) -> dict:
     default = _default_config()
 
     if not isinstance(config, dict):
         return default
-
-    config.setdefault("settings", {})
-    config["settings"] = _normalize_settings(config.get("settings", {}), allow_auto_fetch=True)
 
     config.setdefault("reels", {})
     config.setdefault("default", {})
@@ -343,7 +238,6 @@ def _migrate_legacy_config(config: dict) -> dict:
 def _load_config():
     if not os.path.exists(CONFIG_FILE):
         default_config = _default_config()
-        default_config["settings"] = _normalize_settings(default_config.get("settings", {}), allow_auto_fetch=True)
         _save_config(default_config)
         return default_config
 
@@ -367,50 +261,6 @@ def get_all_configs():
     return _load_config()
 
 
-def get_global_settings():
-    config = _load_config()
-    return config.get("settings", {})
-
-
-def update_global_settings(new_settings: dict):
-    config = _load_config()
-
-    existing = config.get("settings", {})
-    merged = {
-        **existing,
-        **(new_settings or {}),
-    }
-
-    # If frontend sends empty username intentionally, auto-fetch again.
-    config["settings"] = _normalize_settings(merged, allow_auto_fetch=True)
-    _save_config(config)
-    return config["settings"]
-
-
-def refresh_global_settings_from_instagram():
-    config = _load_config()
-    fetched = _auto_fetch_owner_profile()
-
-    if fetched.get("owner_username"):
-        config["settings"] = _normalize_settings({
-            **config.get("settings", {}),
-            **fetched,
-        }, allow_auto_fetch=False)
-        _save_config(config)
-
-    return config.get("settings", {})
-
-
-def get_owner_username() -> str:
-    settings = get_global_settings()
-    return _clean_username(settings.get("owner_username") or OWNER_USERNAME or "")
-
-
-def get_owner_igsid() -> str:
-    settings = get_global_settings()
-    return (settings.get("owner_igsid") or OWNER_IGSID or "").strip()
-
-
 def get_reel_config(media_id: str):
     config = _load_config()
     reel_config = config["reels"].get(media_id, {})
@@ -422,11 +272,11 @@ def update_reel_config(media_id: str, new_config: dict):
     existing = config["reels"].get(media_id, {})
     merged = _deep_merge(_deep_merge(config["default"], existing), new_config)
 
-    merged["comment_replies"] = list(dict.fromkeys([
+    merged["comment_replies"] = [
         r.strip()
         for r in merged.get("comment_replies", [])
         if isinstance(r, str) and r.strip()
-    ]))
+    ]
 
     merged["message_boxes"] = _normalize_boxes(merged.get("message_boxes", []))
     merged["start_box_id"] = (merged.get("start_box_id") or "box_main").strip()
@@ -441,12 +291,7 @@ def get_random_comment_reply(config: dict, username: str = "") -> str:
     if not isinstance(replies, list) or not replies:
         return ""
 
-    clean_replies = list(dict.fromkeys([
-        r.strip() for r in replies
-        if isinstance(r, str) and r.strip()
-    ]))
-
-    chosen = random.choice(clean_replies or [""])
+    chosen = random.choice([r for r in replies if isinstance(r, str) and r.strip()] or [""])
     if not chosen:
         return ""
 
