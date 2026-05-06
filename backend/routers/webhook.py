@@ -22,7 +22,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROCESSED_FILE = os.path.join(BASE_DIR, "processed_comments.json")
 FLOW_STATE_FILE = os.path.join(BASE_DIR, "flow_state.json")
 
-OWNER_USERNAME = "mrkousikai"
+OWNER_USERNAME = "_n7xv0"
 
 
 def _load_json_file(path, default):
