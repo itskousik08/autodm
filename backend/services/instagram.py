@@ -1,6 +1,6 @@
 import requests
 from urllib.parse import quote
-from config import INSTAGRAM_ACCESS_TOKEN
+from config import INSTAGRAM_ACCESS_TOKEN, IG_BUSINESS_ACCOUNT_ID
 
 GRAPH_API_URL = "https://graph.instagram.com"
 BUTTON_TEMPLATE_TEXT_MAX = 640
@@ -28,6 +28,26 @@ def _truncate_text(text: str, max_len: int = BUTTON_TEMPLATE_TEXT_MAX) -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - 3].rstrip() + "..."
+
+
+def _clean_instagram_username(value: str) -> str:
+    if not value:
+        return ""
+
+    username = str(value).strip().replace('"', "").replace("'", "")
+    username = username.replace("https://", "").replace("http://", "")
+    username = username.replace("www.instagram.com/", "")
+    username = username.replace("instagram.com/", "")
+    username = username.replace("@", "")
+    username = username.strip().strip("/")
+
+    if "/" in username:
+        username = username.split("/", 1)[0]
+
+    if "?" in username:
+        username = username.split("?", 1)[0]
+
+    return username.strip().lower()
 
 
 def send_dm(comment_id: str, message: str):
@@ -168,38 +188,6 @@ def send_regular_buttons(igsid: str, text: str, buttons: list):
         return {"error": {"message": f"Failed to send buttons: {str(e)}"}}
 
 
-def send_regular_buttons_to_comment(comment_id: str, text: str, buttons: list):
-    url = f"{GRAPH_API_URL}/me/messages"
-    safe_text = _truncate_text(text)
-
-    payload = {
-        "recipient": {"comment_id": comment_id},
-        "message": {
-            "attachment": {
-                "type": "template",
-                "payload": {
-                    "template_type": "button",
-                    "text": safe_text,
-                    "buttons": buttons[:3],
-                },
-            }
-        },
-    }
-    params = {"access_token": INSTAGRAM_ACCESS_TOKEN}
-
-    try:
-        response = requests.post(url, json=payload, params=params, timeout=30)
-        data = _safe_json(response)
-
-        if "error" in data:
-            print("COMMENT BUTTONS FAILED -> FALLBACK TO PLAIN TEXT:", data.get("error"))
-            return send_dm(comment_id, safe_text)
-
-        return data
-    except requests.RequestException as e:
-        return {"error": {"message": f"Failed to send comment buttons: {str(e)}"}}
-
-
 def send_quick_replies(comment_id: str, text: str, quick_replies: list):
     url = f"{GRAPH_API_URL}/me/messages"
     payload = {
@@ -231,7 +219,13 @@ def reply_to_comment(comment_id: str, message: str):
 
 
 def get_account_media():
-    url = f"{GRAPH_API_URL}/me/media"
+    ig_account_id = (IG_BUSINESS_ACCOUNT_ID or "").strip()
+
+    if not ig_account_id:
+        print("IG_BUSINESS_ACCOUNT_ID missing in env")
+        return []
+
+    url = f"https://graph.facebook.com/{ig_account_id}/media"
     params = {
         "access_token": INSTAGRAM_ACCESS_TOKEN,
         "fields": "id,media_type,media_url,thumbnail_url,permalink,caption",
@@ -243,10 +237,14 @@ def get_account_media():
         data = _safe_json(response)
 
         if "error" in data:
+            print("GET ACCOUNT MEDIA ERROR:", data)
             return []
 
-        return data.get("data", [])
-    except requests.RequestException:
+        media = data.get("data", [])
+        print("MEDIA COUNT:", len(media))
+        return media
+    except requests.RequestException as e:
+        print("FAILED TO FETCH ACCOUNT MEDIA:", str(e))
         return []
 
 
@@ -319,7 +317,7 @@ def get_user_follow_status(igsid: str):
 
 
 def build_profile_button(username: str, title: str = "Visit Profile"):
-    safe_username = (username or "").strip().replace("@", "")
+    safe_username = _clean_instagram_username(username)
 
     if safe_username:
         profile_url = f"https://instagram.com/{quote(safe_username)}"

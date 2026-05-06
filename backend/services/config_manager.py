@@ -4,8 +4,34 @@ import copy
 import random
 from typing import Optional
 
+try:
+    from config import OWNER_USERNAME, OWNER_IGSID
+except Exception:
+    OWNER_USERNAME = ""
+    OWNER_IGSID = ""
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "reels_config.json")
+
+
+def _clean_username(value: str) -> str:
+    if not value:
+        return ""
+
+    username = str(value).strip().replace('"', "").replace("'", "")
+    username = username.replace("https://", "").replace("http://", "")
+    username = username.replace("www.instagram.com/", "")
+    username = username.replace("instagram.com/", "")
+    username = username.replace("@", "")
+    username = username.strip().strip("/")
+
+    if "/" in username:
+        username = username.split("/", 1)[0]
+
+    if "?" in username:
+        username = username.split("?", 1)[0]
+
+    return username.strip().lower()
 
 
 def _default_boxes():
@@ -29,6 +55,10 @@ def _default_boxes():
 
 def _default_config():
     return {
+        "settings": {
+            "owner_username": _clean_username(OWNER_USERNAME),
+            "owner_igsid": (OWNER_IGSID or "").strip(),
+        },
         "reels": {},
         "default": {
             "active": True,
@@ -123,11 +153,27 @@ def _normalize_boxes(boxes):
     return cleaned
 
 
+def _normalize_settings(settings: dict) -> dict:
+    if not isinstance(settings, dict):
+        settings = {}
+
+    owner_username = _clean_username(settings.get("owner_username") or OWNER_USERNAME or "")
+    owner_igsid = (settings.get("owner_igsid") or OWNER_IGSID or "").strip()
+
+    return {
+        "owner_username": owner_username,
+        "owner_igsid": owner_igsid,
+    }
+
+
 def _migrate_legacy_config(config: dict) -> dict:
     default = _default_config()
 
     if not isinstance(config, dict):
         return default
+
+    config.setdefault("settings", {})
+    config["settings"] = _normalize_settings(config.get("settings", {}))
 
     config.setdefault("reels", {})
     config.setdefault("default", {})
@@ -261,6 +307,35 @@ def get_all_configs():
     return _load_config()
 
 
+def get_global_settings():
+    config = _load_config()
+    return config.get("settings", {})
+
+
+def update_global_settings(new_settings: dict):
+    config = _load_config()
+
+    existing = config.get("settings", {})
+    merged = {
+        **existing,
+        **(new_settings or {}),
+    }
+
+    config["settings"] = _normalize_settings(merged)
+    _save_config(config)
+    return config["settings"]
+
+
+def get_owner_username() -> str:
+    settings = get_global_settings()
+    return _clean_username(settings.get("owner_username") or OWNER_USERNAME or "")
+
+
+def get_owner_igsid() -> str:
+    settings = get_global_settings()
+    return (settings.get("owner_igsid") or OWNER_IGSID or "").strip()
+
+
 def get_reel_config(media_id: str):
     config = _load_config()
     reel_config = config["reels"].get(media_id, {})
@@ -272,11 +347,11 @@ def update_reel_config(media_id: str, new_config: dict):
     existing = config["reels"].get(media_id, {})
     merged = _deep_merge(_deep_merge(config["default"], existing), new_config)
 
-    merged["comment_replies"] = [
+    merged["comment_replies"] = list(dict.fromkeys([
         r.strip()
         for r in merged.get("comment_replies", [])
         if isinstance(r, str) and r.strip()
-    ]
+    ]))
 
     merged["message_boxes"] = _normalize_boxes(merged.get("message_boxes", []))
     merged["start_box_id"] = (merged.get("start_box_id") or "box_main").strip()
@@ -291,7 +366,12 @@ def get_random_comment_reply(config: dict, username: str = "") -> str:
     if not isinstance(replies, list) or not replies:
         return ""
 
-    chosen = random.choice([r for r in replies if isinstance(r, str) and r.strip()] or [""])
+    clean_replies = list(dict.fromkeys([
+        r.strip() for r in replies
+        if isinstance(r, str) and r.strip()
+    ]))
+
+    chosen = random.choice(clean_replies or [""])
     if not chosen:
         return ""
 
