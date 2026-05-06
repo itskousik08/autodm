@@ -547,6 +547,10 @@ async def handle_webhook(request: Request):
         for messaging in entry.get("messaging", []):
             print("MESSAGING EVENT:", messaging)
 
+            if (messaging.get("message") or {}).get("is_echo"):
+                print("ECHO MESSAGE SKIPPED")
+                continue
+
             sender = messaging.get("sender", {}) or {}
             igsid = (sender.get("id") or "").strip()
             if not igsid:

@@ -2,13 +2,14 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from services.instagram import get_account_media, send_dm, reply_to_comment
+from services.instagram import get_account_media, send_dm, reply_to_comment, get_business_account_profile
 from services.config_manager import (
     get_all_configs,
     update_reel_config,
     get_reel_config,
     get_global_settings,
     update_global_settings,
+    refresh_global_settings_from_instagram,
 )
 from services.analytics_manager import get_analytics, get_logs, cleanup_old_logs
 
@@ -97,7 +98,8 @@ class TestReplyRequest(BaseModel):
 async def settings():
     try:
         return {
-            "settings": get_global_settings()
+            "settings": get_global_settings(),
+            "business_profile": get_business_account_profile(),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -108,6 +110,18 @@ async def update_settings(settings_update: SettingsUpdate):
     try:
         payload = settings_update.model_dump() if hasattr(settings_update, "model_dump") else settings_update.dict()
         updated = update_global_settings(payload)
+        return {
+            "status": "updated",
+            "settings": updated,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/settings/refresh-instagram")
+async def refresh_settings_from_instagram():
+    try:
+        updated = refresh_global_settings_from_instagram()
         return {
             "status": "updated",
             "settings": updated,
@@ -140,6 +154,7 @@ async def fetch_reels():
                 "permalink": item.get("permalink"),
                 "caption": (item.get("caption") or "")[:120],
                 "media_type": item.get("media_type"),
+                "timestamp": item.get("timestamp"),
                 "config": config,
             })
 
