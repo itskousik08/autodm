@@ -10,12 +10,7 @@ from services.instagram import (
     build_profile_button,
     get_user_follow_status,
 )
-from services.config_manager import (
-    get_reel_config,
-    get_random_comment_reply,
-    get_owner_username,
-    get_owner_igsid,
-)
+from services.config_manager import get_reel_config, get_random_comment_reply
 from services.analytics_manager import log_event
 import json
 import os
@@ -25,8 +20,9 @@ router = APIRouter(prefix="/webhook", tags=["webhook"])
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROCESSED_FILE = os.path.join(BASE_DIR, "processed_comments.json")
-PROCESSED_REPLIES_FILE = os.path.join(BASE_DIR, "processed_comment_replies.json")
 FLOW_STATE_FILE = os.path.join(BASE_DIR, "flow_state.json")
+
+OWNER_USERNAME = "mrkousikai"
 
 
 def _load_json_file(path, default):
@@ -55,17 +51,6 @@ def _mark_processed(comment_id: str):
     _save_json_file(PROCESSED_FILE, data)
 
 
-def _already_replied(comment_id: str) -> bool:
-    data = _load_json_file(PROCESSED_REPLIES_FILE, {})
-    return comment_id in data
-
-
-def _mark_replied(comment_id: str):
-    data = _load_json_file(PROCESSED_REPLIES_FILE, {})
-    data[comment_id] = int(time.time())
-    _save_json_file(PROCESSED_REPLIES_FILE, data)
-
-
 def _get_flow_state() -> dict:
     data = _load_json_file(FLOW_STATE_FILE, {})
     return data if isinstance(data, dict) else {}
@@ -88,23 +73,6 @@ def _set_user_state(igsid: str, state: dict):
 
 def _get_user_state(igsid: str) -> dict:
     return _get_flow_state().get(igsid, {})
-
-
-def _same_clean_text(a: str, b: str) -> bool:
-    return (a or "").strip().replace("@", "").lower() == (b or "").strip().replace("@", "").lower()
-
-
-def _is_owner_user(username: str = "", igsid: str = "") -> bool:
-    owner_username = get_owner_username()
-    owner_igsid = get_owner_igsid()
-
-    if owner_username and username and _same_clean_text(username, owner_username):
-        return True
-
-    if owner_igsid and igsid and str(igsid).strip() == str(owner_igsid).strip():
-        return True
-
-    return False
 
 
 def _matches_trigger(comment_text: str, config: dict) -> bool:
@@ -144,6 +112,10 @@ def _send_initial_dm(comment_id: str, config: dict):
     first_dm = config.get("first_dm", {})
     button_label = (first_dm.get("button_label") or "Send me the access").strip()
 
+    # IMPORTANT:
+    # "Send me the access" must always be a postback button.
+    # It should never open a URL/link.
+    # On click, Instagram sends payload SEND_ACCESS to this webhook.
     return send_dm_with_postback_button(
         comment_id=comment_id,
         text=text,
@@ -161,12 +133,8 @@ def _send_follow_gate_message(igsid: str, config: dict):
     visit_label = (follow_gate.get("visit_profile_label", "Visit Profile") or "Visit Profile").strip()
     confirm_label = (follow_gate.get("confirm_label", "I'm following ✅") or "I'm following ✅").strip()
 
-    owner_username = get_owner_username()
-    if not owner_username:
-        print("OWNER USERNAME MISSING: Visit Profile will fallback to instagram.com")
-
     buttons = [
-        build_profile_button(username=owner_username, title=visit_label),
+        build_profile_button(username=OWNER_USERNAME, title=visit_label),
         {
             "type": "postback",
             "title": confirm_label[:20],
@@ -187,12 +155,8 @@ def _send_follow_gate_retry_message(igsid: str, config: dict):
     visit_label = (follow_gate.get("visit_profile_label", "Visit Profile") or "Visit Profile").strip()
     confirm_label = (follow_gate.get("confirm_label", "I'm following ✅") or "I'm following ✅").strip()
 
-    owner_username = get_owner_username()
-    if not owner_username:
-        print("OWNER USERNAME MISSING: Visit Profile will fallback to instagram.com")
-
     buttons = [
-        build_profile_button(username=owner_username, title=visit_label),
+        build_profile_button(username=OWNER_USERNAME, title=visit_label),
         {
             "type": "postback",
             "title": confirm_label[:20],
@@ -337,6 +301,15 @@ def _send_main_message(igsid: str, config: dict):
 
 
 def _send_main_message_to_comment(comment_id: str, config: dict):
+    """
+    Send final access as a private reply to the comment when the commenter
+    already follows before clicking the first button.
+
+    Uses only functions that already exist in services.instagram.py:
+    - send_dm
+    - send_dm_with_button
+    - send_dm_with_postback_button
+    """
     main_message = config.get("main_message", {})
     text = (main_message.get("text") or "").strip() or "Here is your access"
     buttons_raw = main_message.get("buttons", [])
@@ -406,8 +379,7 @@ async def handle_webhook(request: Request):
             if not comment_id or not media_id:
                 continue
 
-            if _is_owner_user(username=username, igsid=igsid):
-                print("OWNER COMMENT SKIPPED:", username, igsid)
+            if username.lower() == OWNER_USERNAME.lower():
                 _mark_processed(comment_id)
                 continue
 
@@ -443,6 +415,10 @@ async def handle_webhook(request: Request):
             print("FOLLOW REQUIRED:", follow_required)
             print("COMMENT EVENT IGSID:", igsid)
 
+            # Desired flow:
+            # If follow gate is required and the commenter already follows,
+            # send final access directly. Otherwise send first DM with
+            # postback button "Send me the access".
             if follow_required and igsid:
                 follow_check = _check_user_follows_owner(igsid=igsid)
                 _log_follow_check(
@@ -497,40 +473,35 @@ async def handle_webhook(request: Request):
 
             reply_message = get_random_comment_reply(config, username=username)
             if reply_message:
-                if _already_replied(comment_id):
-                    print("COMMENT REPLY ALREADY SENT, SKIPPING:", comment_id)
-                else:
-                    _mark_replied(comment_id)
+                uses_placeholder = any(
+                    isinstance(r, str) and "{username}" in r
+                    for r in config.get("comment_replies", [])
+                )
+                final_reply = reply_message if uses_placeholder else f"@{username} {reply_message}"
 
-                    uses_placeholder = any(
-                        isinstance(r, str) and "{username}" in r
-                        for r in config.get("comment_replies", [])
+                reply_result = reply_to_comment(comment_id, final_reply)
+                print("COMMENT REPLY RESULT:", reply_result)
+
+                if "error" in reply_result:
+                    log_event(
+                        event_type="comment_reply_failed",
+                        status="failed",
+                        media_id=media_id,
+                        comment_id=comment_id,
+                        username=username,
+                        igsid=canonical_igsid,
+                        meta=reply_result.get("error", {}),
                     )
-                    final_reply = reply_message if uses_placeholder else f"@{username} {reply_message}"
-
-                    reply_result = reply_to_comment(comment_id, final_reply)
-                    print("COMMENT REPLY RESULT:", reply_result)
-
-                    if "error" in reply_result:
-                        log_event(
-                            event_type="comment_reply_failed",
-                            status="failed",
-                            media_id=media_id,
-                            comment_id=comment_id,
-                            username=username,
-                            igsid=canonical_igsid,
-                            meta=reply_result.get("error", {}),
-                        )
-                    else:
-                        log_event(
-                            event_type="comment_reply_sent",
-                            status="success",
-                            media_id=media_id,
-                            comment_id=comment_id,
-                            username=username,
-                            igsid=canonical_igsid,
-                            meta={"reply_message": final_reply},
-                        )
+                else:
+                    log_event(
+                        event_type="comment_reply_sent",
+                        status="success",
+                        media_id=media_id,
+                        comment_id=comment_id,
+                        username=username,
+                        igsid=canonical_igsid,
+                        meta={"reply_message": final_reply},
+                    )
 
             if canonical_igsid:
                 _set_user_state(canonical_igsid, {
@@ -547,17 +518,9 @@ async def handle_webhook(request: Request):
         for messaging in entry.get("messaging", []):
             print("MESSAGING EVENT:", messaging)
 
-            if (messaging.get("message") or {}).get("is_echo"):
-                print("ECHO MESSAGE SKIPPED")
-                continue
-
             sender = messaging.get("sender", {}) or {}
             igsid = (sender.get("id") or "").strip()
             if not igsid:
-                continue
-
-            if _is_owner_user(igsid=igsid):
-                print("OWNER MESSAGING EVENT SKIPPED:", igsid)
                 continue
 
             payload = None
