@@ -1,16 +1,9 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from services.instagram import get_account_media, send_dm, reply_to_comment, get_business_account_profile
-from services.config_manager import (
-    get_all_configs,
-    update_reel_config,
-    get_reel_config,
-    get_global_settings,
-    update_global_settings,
-    refresh_global_settings_from_instagram,
-)
+from services.instagram import get_account_media, send_dm, reply_to_comment
+from services.config_manager import get_all_configs, update_reel_config, get_reel_config
 from services.analytics_manager import get_analytics, get_logs, cleanup_old_logs
 
 router = APIRouter(prefix="/api", tags=["admin"])
@@ -75,11 +68,6 @@ class ReelConfigUpdate(BaseModel):
     advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)
 
 
-class SettingsUpdate(BaseModel):
-    owner_username: str = ""
-    owner_igsid: str = ""
-
-
 class TestDMRequest(BaseModel):
     comment_id: str
     message: str
@@ -88,46 +76,6 @@ class TestDMRequest(BaseModel):
 class TestReplyRequest(BaseModel):
     comment_id: str
     message: str
-
-
-# =========================
-# Global Settings
-# =========================
-
-@router.get("/settings")
-async def settings():
-    try:
-        return {
-            "settings": get_global_settings(),
-            "business_profile": get_business_account_profile(),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.put("/settings")
-async def update_settings(settings_update: SettingsUpdate):
-    try:
-        payload = settings_update.model_dump() if hasattr(settings_update, "model_dump") else settings_update.dict()
-        updated = update_global_settings(payload)
-        return {
-            "status": "updated",
-            "settings": updated,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/settings/refresh-instagram")
-async def refresh_settings_from_instagram():
-    try:
-        updated = refresh_global_settings_from_instagram()
-        return {
-            "status": "updated",
-            "settings": updated,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =========================
@@ -154,7 +102,6 @@ async def fetch_reels():
                 "permalink": item.get("permalink"),
                 "caption": (item.get("caption") or "")[:120],
                 "media_type": item.get("media_type"),
-                "timestamp": item.get("timestamp"),
                 "config": config,
             })
 
@@ -181,17 +128,13 @@ async def update_reel(media_id: str, config: ReelConfigUpdate):
         payload = config.model_dump() if hasattr(config, "model_dump") else config.dict()
 
         # clean comment replies
-        payload["comment_replies"] = list(dict.fromkeys([
+        payload["comment_replies"] = [
             r.strip() for r in payload.get("comment_replies", [])
             if isinstance(r, str) and r.strip()
-        ]))
+        ]
 
         # sync require_follow -> follow_gate.enabled
         payload["follow_gate"]["enabled"] = bool(payload.get("require_follow", False))
-
-        # "Send me the access" must be a postback in backend.
-        # Keep this empty to avoid frontend accidentally turning it into URL button.
-        payload["first_dm"]["button_link"] = ""
 
         # normalize main buttons
         main_buttons = []
