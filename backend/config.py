@@ -13,3 +13,5 @@ def _clean_env(value: str) -> str:
 VERIFY_TOKEN = _clean_env(os.getenv("VERIFY_TOKEN", ""))
 INSTAGRAM_ACCESS_TOKEN = _clean_env(os.getenv("INSTAGRAM_ACCESS_TOKEN", ""))
 IG_BUSINESS_ACCOUNT_ID = _clean_env(os.getenv("IG_BUSINESS_ACCOUNT_ID", ""))
+
+OWNER_USERNAME = _clean_env(os.getenv("OWNER_USERNAME", ""))
